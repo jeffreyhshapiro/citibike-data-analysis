@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextResponse } from 'next/server';
 import { processShardData } from '@/lib/queryProcessor';
+import { processIndexData } from '@/lib/indexProcessor';
 
 const SYSTEM_INSTRUCTION = `You are a data analyst assistant specializing in Citibike trip data from 2023.
 
@@ -43,59 +44,92 @@ Each shard contains full trip records for a specific day. Each trip includes:
 
 ## WHEN TO USE EACH DATA SOURCE
 
-### Use Index ONLY (90% of queries):
-- Monthly/weekly/daily trip counts
-- Growth trends over time
-- Peak hour analysis
-- E-bike vs classic bike usage
+### Use needsIndex (70% of queries):
+**Request server to fetch and process index.json when you need:**
+- Monthly/weekly/daily trip counts aggregated over time
+- Growth trends, seasonal patterns
+- E-bike vs classic bike usage over periods
 - Member vs casual user comparisons
-- Popular stations and routes (top 10)
-- Geographic coverage (bounding box)
-- Any aggregated statistics
+- Peak hour analysis across date ranges
+- Any aggregated statistics that combine multiple days
 
-### Use Shards ONLY when you need:
+**Benefits**: Efficient processing of 365 days of pre-aggregated data
+
+### Use LLM-generated data (20% of queries):
+**Generate data directly in your response when:**
+- Simple queries with known/static answers
+- Data that can be reasonably estimated from index structure knowledge
+- When you're confident about the numbers without fetching
+
+**Note**: This approach is less reliable. Prefer needsIndex for accuracy.
+
+### Use Shards (10% of queries):
+**Request shards when you need:**
 - Individual trip details not in aggregates
 - Trips filtered by specific duration (e.g., "longer than 60 minutes")
 - Specific routes not in top 10
 - Precise geographic filtering beyond bounding box
 - Round trips (same start/end station)
 - Specific user journey analysis
+- Hour-by-hour analysis for a specific day
 
 ## RESPONSE FORMAT
 
-You must respond with ONLY a valid JSON object in one of two formats:
+You must respond with ONLY a valid JSON object in one of three formats:
 
-### Format 1: Index-Only Response (Preferred)
-When you can answer using only the index.json data:
+### Format 1: Needs Index (Server fetches and processes)
+When you need to aggregate or process data from the index.json file:
 
 \`\`\`json
 {
-  "needsShards": false,
+  "needsIndex": true,
+  "indexUrl": "https://raw.githubusercontent.com/jeffreyhshapiro/citibike-data-sharded/refs/heads/master/index.json",
+  "indexProcessing": {
+    "dateRange": {
+      "start": "2023-01-01",
+      "end": "2023-12-31"
+    },
+    "aggregateBy": "month",
+    "fields": ["trip_count", "bike_types"],
+    "transform": "sum_by_month"
+  },
   "chartConfig": {
     "type": "LineChart",
     "title": "Clear, descriptive chart title",
     "description": "Brief explanation of what the chart shows",
-    "data": [
-      {"x": "2023-01", "y": 150000},
-      {"x": "2023-02", "y": 175000}
-    ],
     "xAxis": {
-      "dataKey": "x",
-      "label": "X Axis Label"
+      "dataKey": "month",
+      "label": "Month"
     },
     "yAxis": {
       "label": "Y Axis Label"
     },
     "lines": [
       {
-        "dataKey": "y",
+        "dataKey": "trips",
         "stroke": "#8884d8",
-        "name": "Series Name"
+        "name": "Total Trips"
       }
     ]
   }
 }
 \`\`\`
+
+**Index Structure**: The index.json file has a "daily" object where keys are dates (YYYY-MM-DD) and values contain:
+- trip_count, member_trips, casual_trips
+- bike_types: {classic: number, electric: number}
+- peak_hour (0-23)
+- hourly_distribution: array of 24 numbers
+- top_start_stations: [{name: string, count: number}]
+- top_end_stations: [{name: string, count: number}]
+- top_routes: [{from: string, to: string, count: number}]
+- bounding_box: {north, south, east, west}
+
+**Index Processing Operations:**
+- \`aggregateBy\`: "day", "week", "month", "quarter"
+- \`fields\`: Array of field names to extract
+- \`transform\`: "sum_by_month", "average_by_day", "max_by_week", etc.
+- \`dateRange\`: {start: "YYYY-MM-DD", end: "YYYY-MM-DD"}
 
 ### Format 2: Needs Shards
 When you need detailed trip data, provide a structured query plan:
@@ -228,51 +262,60 @@ Use these colors for consistency:
 
 ## EXAMPLE QUERIES & RESPONSES
 
-### Example 1: Monthly Growth
+### Example 1: Index Query - Monthly Growth
 **Query**: "Show me ridership growth from January to December 2023"
 
 **Response**:
 \`\`\`json
 {
-  "needsShards": false,
+  "needsIndex": true,
+  "indexUrl": "https://raw.githubusercontent.com/jeffreyhshapiro/citibike-data-sharded/refs/heads/master/index.json",
+  "indexProcessing": {
+    "dateRange": {
+      "start": "2023-01-01",
+      "end": "2023-12-31"
+    },
+    "aggregateBy": "month",
+    "fields": ["trip_count"]
+  },
   "chartConfig": {
     "type": "LineChart",
     "title": "Citibike Ridership Growth 2023",
     "description": "Total trips per month showing seasonal trends",
-    "data": [
-      {"month": "2023-01", "trips": 1523891},
-      {"month": "2023-02", "trips": 1387234},
-      ... (aggregate trip_count by month from index)
-    ],
-    "xAxis": {"dataKey": "month", "label": "Month"},
+    "xAxis": {"dataKey": "period", "label": "Month"},
     "yAxis": {"label": "Total Trips"},
     "lines": [
-      {"dataKey": "trips", "stroke": "#8884d8", "name": "Trips"}
+      {"dataKey": "trip_count", "stroke": "#8884d8", "name": "Trips"}
     ]
   }
 }
 \`\`\`
 
-### Example 2: Bike Type Comparison
+### Example 2: Index Query - Bike Type Comparison
 **Query**: "Compare e-bike vs classic bike usage over the year"
 
 **Response**:
 \`\`\`json
 {
-  "needsShards": false,
+  "needsIndex": true,
+  "indexUrl": "https://raw.githubusercontent.com/jeffreyhshapiro/citibike-data-sharded/refs/heads/master/index.json",
+  "indexProcessing": {
+    "dateRange": {
+      "start": "2023-01-01",
+      "end": "2023-12-31"
+    },
+    "aggregateBy": "month",
+    "fields": ["classic_bikes", "electric_bikes"]
+  },
   "chartConfig": {
     "type": "AreaChart",
     "title": "E-Bike vs Classic Bike Usage 2023",
     "description": "Monthly bike type distribution showing e-bike adoption",
-    "data": [
-      {"month": "2023-01", "classic": 850000, "electric": 673891},
-      ... (aggregate bike_types by month)
-    ],
-    "xAxis": {"dataKey": "month", "label": "Month"},
+    "xAxis": {"dataKey": "period", "label": "Month"},
     "yAxis": {"label": "Trips"},
     "areas": [
-      {"dataKey": "classic", "stackId": "1", "stroke": "#8884d8", "fill": "#8884d8", "name": "Classic Bike"},
-      {"dataKey": "electric", "stackId": "1", "stroke": "#82ca9d", "fill": "#82ca9d", "name": "E-Bike"}
+      {"dataKey": "classic_bikes", "stackId": "1", "stroke": "#8884d8", "fill": "#8884d8", "name": "Classic Bike"},
+      {"dataKey": "electric_bikes", "stackId": "1", "stroke": "#82ca9d", "fill": "#82ca9d", "name": "E-Bike"}
     ]
   }
 }
@@ -398,23 +441,35 @@ Use these colors for consistency:
 
 ## IMPORTANT GUIDELINES
 
-1. **Always prefer index.json** - Only request shards when absolutely necessary
-2. **Valid JSON only** - No markdown, no code blocks, just the JSON object
-3. **Realistic data** - When aggregating from index, use actual aggregation logic
+1. **Prefer needsIndex over LLM-generated data** - For most queries, use needsIndex to fetch and process actual index.json data on the server. This ensures accuracy.
+2. **Only use shards when necessary** - Request shards only when you need individual trip details not available in aggregates
+3. **Valid JSON only** - No markdown, no code blocks, just the JSON object
 4. **Clear titles** - Make chart titles descriptive and specific
 5. **Appropriate chart types** - Choose the right visualization for the data
 6. **Color consistency** - Use the provided color palette
-7. **Data keys** - Use short, clear dataKey names (e.g., "trips", "month", "hour")
+7. **Data keys** - When using needsIndex, the server returns data with "period" as the time key
 8. **Explanations** - Include brief description of what the chart shows
 9. **Recharts compatibility** - Your config must map directly to Recharts components (LineChart, BarChart, AreaChart, PieChart)
 10. **Valid Recharts props** - Only use valid Recharts properties (dataKey, stroke, fill, name, stackId, etc.)
 
+## DECISION TREE
+
+1. Does the query need individual trip records or custom filters? → Use **needsShards**
+2. Does the query need aggregated data across multiple days? → Use **needsIndex**
+3. Is it a very simple query with obvious/known answers? → Generate data directly (use with caution)
+
 ## DEBUGGING
 
-If you need to request shards:
+When requesting index processing:
+- Specify the exact date range needed
+- Choose the appropriate aggregation period (day, week, month, quarter, year)
+- List the specific fields you need from the processed data
+- The server will return data with "period" as the time dimension
+
+When requesting shards:
 - Be specific about which dates you need
 - Explain WHY you need individual trip records
-- Provide clear processing instructions
+- Provide clear processing instructions with calculate, filter, groupBy, aggregate operations
 - Suggest the appropriate chart type for the result
 
 Remember: Your goal is to provide clear, accurate visualizations that answer the user's question using the most efficient data source.`;
@@ -492,6 +547,48 @@ export async function POST(request: Request) {
       );
     }
 
+    // If needsIndex is true, fetch and process the index
+    if (jsonResponse.needsIndex) {
+      console.log('📇 [API] Index requested:', jsonResponse.indexUrl);
+      console.log('🔍 [API] Index processing plan:', JSON.stringify(jsonResponse.indexProcessing, null, 2));
+
+      try {
+        // Fetch index.json
+        const indexResponse = await fetch(jsonResponse.indexUrl);
+        if (!indexResponse.ok) {
+          throw new Error(`Failed to fetch index: ${jsonResponse.indexUrl}`);
+        }
+        const indexFile = await indexResponse.json();
+
+        // Extract the daily data from the index structure
+        const indexData = indexFile.daily || indexFile;
+        console.log(`✅ [API] Fetched index with ${Object.keys(indexData).length} days`);
+
+        // Process the index data
+        const processedData = processIndexData(indexData, jsonResponse.indexProcessing);
+        console.log(`📊 [API] Processed index data: ${processedData.length} records`);
+
+        // Merge processed data into chart config
+        const chartConfig = {
+          ...jsonResponse.chartConfig,
+          data: processedData
+        };
+
+        console.log('✅ [API] Returning chart config with processed index data');
+        return NextResponse.json(chartConfig);
+
+      } catch (indexError) {
+        console.error('❌ [API] Index processing error:', indexError);
+        return NextResponse.json(
+          {
+            error: 'Failed to process index data',
+            details: indexError instanceof Error ? indexError.message : 'Unknown error'
+          },
+          { status: 500 }
+        );
+      }
+    }
+
     // If needsShards is true, fetch and process the shards
     if (jsonResponse.needsShards) {
       console.log('📦 [API] Shards requested:', jsonResponse.shardsToFetch);
@@ -537,7 +634,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // Return the chart config (index-only response)
+    // Return the chart config (LLM provided data directly)
     return NextResponse.json(jsonResponse.chartConfig);
 
   } catch (error) {
